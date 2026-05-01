@@ -1,5 +1,4 @@
 from fastmcp import FastMCP
-from fastmcp.apps.file_upload import FileUpload
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -30,8 +29,7 @@ mcp = FastMCP(
     instructions="Intelligently ingest ANY SNF PDF/Excel. Extract ONLY pertinent data. Handle new formats automatically."
 )
 
-file_app = FileUpload()
-mcp.mount(file_app)
+
 
 # PostgreSQL connection (Railway provides DATABASE_URL automatically)
 def get_db_conn():
