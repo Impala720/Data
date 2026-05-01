@@ -1,0 +1,5 @@
+fastmcp
+pymupdf4llm
+pandas
+openai
+psycopg2-binary
