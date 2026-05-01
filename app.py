@@ -10,7 +10,7 @@ from openai import OpenAI
 import pandas as pd
 
 # ====================== SETTINGS ======================
-client = OpenAI()  # uses OPENAI_API_KEY from Railway env vars
+client = OpenAI()  # uses OPENAI_API_KEY from Railway
 
 # ====================== FLEXIBLE SCHEMA ======================
 class ExtractedRecord(BaseModel):
@@ -26,12 +26,10 @@ class ExtractedRecord(BaseModel):
 # ====================== MCP SERVER ======================
 mcp = FastMCP(
     name="Meridian Meadows SNF Universal Pipeline",
-    instructions="Intelligently ingest ANY SNF PDF/Excel. Extract ONLY pertinent data. Handle new formats automatically."
+    instructions="Intelligently ingest ANY SNF PDF/Excel from ChatGPT uploads. Extract ONLY pertinent clinical/admin data."
 )
 
-
-
-# PostgreSQL connection (Railway provides DATABASE_URL automatically)
+# PostgreSQL connection
 def get_db_conn():
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     conn.set_session(autocommit=True)
@@ -58,29 +56,35 @@ init_db()
 
 @mcp.tool()
 async def ingest_files(file_paths: List[str], custom_instructions: str = "") -> str:
-    """Ingest any SNF files. Uses LLM to handle new report types/formats."""
+    """Ingest files uploaded from ChatGPT. Handles temporary /mnt/data paths automatically."""
     results = []
     conn = get_db_conn()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     
     for path in file_paths:
         filename = os.path.basename(path).lower()
-        # Convert PDF/Excel to markdown
-        if path.lower().endswith(('.xlsx', '.xls')):
-            md = pd.read_excel(path).to_markdown()
-        else:
-            import pymupdf4llm
-            md = pymupdf4llm.to_markdown(path)
-        
-        md_trunc = md[:120000] if len(md) > 120000 else md
+        print(f"Processing file: {path} → {filename}")  # debug
         
         try:
-            prompt = f"""You are an expert SNF data extractor.
-Extract ONLY pertinent clinical/admin data.
-Document: {filename}
-Extra instructions: {custom_instructions or "Extract residents, incidents, progress notes, meds, vitals, assessments, movements, etc."}
+            # Convert to markdown (works with ChatGPT temp paths)
+            if path.lower().endswith(('.xlsx', '.xls')):
+                df = pd.read_excel(path)
+                md = df.to_markdown(index=False)
+            else:
+                import pymupdf4llm
+                md = pymupdf4llm.to_markdown(path)
+            
+            md_trunc = md[:120000] if len(md) > 120000 else md
 
-Return a JSON array of records with this exact schema:
+            # LLM extraction
+            prompt = f"""You are an expert SNF data extractor.
+Extract ONLY pertinent clinical and administrative information.
+Ignore headers, footers, signatures, page numbers.
+
+Document: {filename}
+Extra instructions: {custom_instructions or "Extract residents, incidents, progress notes, medication orders, vitals, weights, assessments, movements, etc."}
+
+Return valid JSON with this exact structure:
 {{"records": [{{
   "resident_name": "...",
   "resident_id": "...",
@@ -89,7 +93,7 @@ Return a JSON array of records with this exact schema:
   "extracted_fields": {{... any relevant keys ...}}
 }}]}}
 
-Markdown:
+Markdown content:
 {md_trunc}"""
 
             response = client.chat.completions.create(
@@ -121,14 +125,16 @@ Markdown:
                     md[:500]
                 ))
             
-            results.append(f"✅ {filename} → {len(records)} records extracted")
-            
+            results.append(f"✅ {filename} → {len(records)} records extracted and saved")
+
         except Exception as e:
-            results.append(f"❌ Error on {filename}: {str(e)}")
+            error_msg = f"❌ Error processing {filename}: {str(e)}"
+            print(error_msg)
+            results.append(error_msg)
     
     cur.close()
     conn.close()
-    return "\n".join(results) + "\n\n✅ Master database updated."
+    return "\n".join(results) + "\n\n✅ Master database updated successfully."
 
 @mcp.tool()
 async def query_master_db(sql: str = "SELECT * FROM master_records ORDER BY ingested_at DESC LIMIT 20") -> str:
@@ -140,7 +146,7 @@ async def query_master_db(sql: str = "SELECT * FROM master_records ORDER BY inge
 
 @mcp.tool()
 async def update_record(record_id: str, updates: dict) -> str:
-    """Edit any record."""
+    """Edit any existing record."""
     conn = get_db_conn()
     cur = conn.cursor()
     set_clause = ", ".join([f"{k}=%s" for k in updates.keys()])
@@ -151,4 +157,4 @@ async def update_record(record_id: str, updates: dict) -> str:
     return f"✅ Record {record_id} updated."
 
 if __name__ == "__main__":
-    mcp.run(transport="sse", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    mcp.run(transport="sse", host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
